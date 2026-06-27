@@ -1,26 +1,18 @@
 """
 PICP Agent — Progyny Infinite Command Project
 Autonomous context ingestion and brain update agent.
-
-What it does:
-- Receives context documents via a simple web endpoint
-- Processes them through Claude API
-- Updates the PICP knowledge files automatically
-- Logs every update with timestamp
-
-Deploy on Railway. Runs 24/7. No manual steps after setup.
 """
 
 import os
 import json
 import datetime
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import anthropic
 import uvicorn
 
-app = FastAPI(title="PICP Agent", version="1.0.0")
+app = FastAPI(title="PICP Agent", version="1.0.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,7 +23,6 @@ app.add_middleware(
 
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-# In-memory brain store (Railway persistent volume path: /app/data/)
 DATA_DIR = "/app/data"
 NOTES_FILE = f"{DATA_DIR}/notes.md"
 LIBRARY_FILE = f"{DATA_DIR}/library.md"
@@ -44,8 +35,11 @@ def log(message: str):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{timestamp}] {message}\n"
     print(entry)
-    with open(LOG_FILE, "a") as f:
-        f.write(entry)
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(entry)
+    except Exception:
+        pass
 
 
 def read_file(path: str) -> str:
@@ -63,7 +57,7 @@ def write_file(path: str, content: str):
 
 class ContextDocument(BaseModel):
     content: str
-    source: str = "manual"  # manual, extraction, session
+    source: str = "manual"
 
 
 class QueryRequest(BaseModel):
@@ -74,7 +68,7 @@ class QueryRequest(BaseModel):
 def health():
     return {
         "status": "PICP Agent online",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "brain": "Progyny Infinite Command Project",
         "operator": "Randy Wain Nutt"
     }
@@ -86,7 +80,6 @@ def status():
     library = read_file(LIBRARY_FILE)
     log_content = read_file(LOG_FILE)
     last_lines = "\n".join(log_content.strip().split("\n")[-10:]) if log_content else "No logs yet"
-    
     return {
         "notes_size": len(notes),
         "library_size": len(library),
@@ -98,48 +91,52 @@ def status():
 
 @app.post("/ingest")
 async def ingest_context(doc: ContextDocument):
-    """
-    Main ingestion endpoint.
-    Send any context document here — the agent processes it and updates the brain.
-    """
     log(f"Ingesting context from source: {doc.source} ({len(doc.content)} chars)")
-    
+
     current_notes = read_file(NOTES_FILE)
     current_library = read_file(LIBRARY_FILE)
-    
-    # Step 1: Extract key information from the context document
+
+    # Extract key info — ask Claude to return JSON but handle plain text gracefully
     extraction_prompt = f"""You are the PICP Agent for Randy Wain Nutt's Progyny Infinite business brain.
 
-A new context document has arrived. Extract and categorize what's in it:
+A new context document has arrived. Extract and categorize what's in it.
 
 CONTEXT DOCUMENT:
 {doc.content}
 
-Extract the following in JSON format:
-{{
-  "new_decisions": ["list of new locked decisions"],
-  "project_updates": ["list of project status changes"],
-  "new_items": ["list of new pipeline items, tools, or initiatives"],
-  "resolved_flags": ["list of open flags that are now resolved"],
-  "new_flags": ["list of new open items or blockers"],
-  "session_observation": "one sentence about what this session reveals about how Randy works best",
-  "summary": "2-3 sentence summary of what happened in this session"
-}}
+You MUST respond with ONLY valid JSON, no other text, no markdown, no backticks. Example format:
+{{"new_decisions": ["decision 1", "decision 2"], "project_updates": ["update 1"], "new_items": ["item 1"], "resolved_flags": [], "new_flags": ["flag 1"], "session_observation": "one sentence observation", "summary": "2-3 sentence summary of this session"}}"""
 
-Return only valid JSON. No other text."""
-
-    extraction_response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": extraction_prompt}]
-    )
-    
+    extracted = None
     try:
-        extracted = json.loads(extraction_response.content[0].text)
-    except json.JSONDecodeError:
-        log("JSON parse failed — storing raw context")
+        extraction_response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": extraction_prompt}]
+        )
+        raw = extraction_response.content[0].text.strip()
+        # Strip any accidental markdown
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        extracted = json.loads(raw)
+        log("JSON extraction successful")
+    except Exception as e:
+        log(f"JSON parse failed ({e}) — using fallback summary")
+        # Fallback: ask Claude for a plain text summary instead
+        try:
+            fallback = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=500,
+                messages=[{"role": "user", "content": f"Summarize this context document in 3 sentences:\n\n{doc.content}"}]
+            )
+            summary = fallback.content[0].text.strip()
+        except Exception:
+            summary = f"Context document ingested from {doc.source}."
+
         extracted = {
-            "summary": "Raw context stored — parse failed",
+            "summary": summary,
             "new_decisions": [],
             "project_updates": [],
             "new_items": [],
@@ -148,66 +145,50 @@ Return only valid JSON. No other text."""
             "session_observation": ""
         }
 
-    # Step 2: Update notes.md with session entry
+    # Update notes.md
     today = datetime.datetime.now().strftime("%B %d, %Y")
-    
-    new_note_entry = f"""
----
-**{today} — {doc.source}**
-{extracted.get('summary', 'Session processed.')}
+    new_note = f"\n---\n**{today} — {doc.source}**\n{extracted.get('summary', '')}\n"
 
-"""
     if extracted.get('new_decisions'):
-        new_note_entry += "**New Decisions:**\n"
-        for d in extracted['new_decisions']:
-            new_note_entry += f"- {d}\n"
-        new_note_entry += "\n"
-    
+        new_note += "\n**Decisions:**\n" + "\n".join(f"- {d}" for d in extracted['new_decisions']) + "\n"
     if extracted.get('new_flags'):
-        new_note_entry += "**New Flags:**\n"
-        for f in extracted['new_flags']:
-            new_note_entry += f"- {f}\n"
-        new_note_entry += "\n"
-
+        new_note += "\n**New Flags:**\n" + "\n".join(f"- {f}" for f in extracted['new_flags']) + "\n"
     if extracted.get('session_observation'):
-        new_note_entry += f"**Observation:** {extracted['session_observation']}\n"
+        new_note += f"\n**Observation:** {extracted['session_observation']}\n"
 
-    updated_notes = current_notes + new_note_entry if current_notes else new_note_entry
-    write_file(NOTES_FILE, updated_notes)
-    
-    # Step 3: Check if library needs updating
+    write_file(NOTES_FILE, (current_notes or "") + new_note)
+
+    # Update library if meaningful changes
     if extracted.get('new_decisions') or extracted.get('project_updates') or extracted.get('new_items'):
-        library_update_prompt = f"""You are the PICP Agent managing Randy's business brain library.
+        try:
+            library_prompt = f"""You are the PICP Agent. Update the knowledge library with this new information.
 
-CURRENT LIBRARY (excerpt — last 2000 chars):
+CURRENT LIBRARY (last 2000 chars):
 {current_library[-2000:] if len(current_library) > 2000 else current_library}
 
-NEW INFORMATION TO INTEGRATE:
+NEW INFO:
 Decisions: {extracted.get('new_decisions', [])}
-Project updates: {extracted.get('project_updates', [])}
+Updates: {extracted.get('project_updates', [])}
 New items: {extracted.get('new_items', [])}
-Resolved flags: {extracted.get('resolved_flags', [])}
 
-Write ONLY the updated sections that need to change. Format as markdown.
-Keep it concise. Do not rewrite the entire library — just the delta.
-Start with: ## LIBRARY UPDATES — {today}"""
+Write ONLY the delta — new or changed sections in markdown. Start with: ## UPDATES — {today}"""
 
-        library_response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": library_update_prompt}]
-        )
-        
-        library_delta = library_response.content[0].text
-        updated_library = current_library + "\n\n" + library_delta
-        write_file(LIBRARY_FILE, updated_library)
-        log("Library updated with new delta")
-    
-    log(f"Ingestion complete — {len(extracted.get('new_decisions', []))} decisions, {len(extracted.get('new_flags', []))} flags")
-    
+            lib_response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1000,
+                messages=[{"role": "user", "content": library_prompt}]
+            )
+            delta = lib_response.content[0].text
+            write_file(LIBRARY_FILE, (current_library or "") + "\n\n" + delta)
+            log("Library updated")
+        except Exception as e:
+            log(f"Library update failed: {e}")
+
+    log(f"Ingest complete — decisions: {len(extracted.get('new_decisions', []))}, flags: {len(extracted.get('new_flags', []))}")
+
     return {
         "status": "ingested",
-        "summary": extracted.get('summary'),
+        "summary": extracted.get('summary', 'Ingested.'),
         "decisions_captured": len(extracted.get('new_decisions', [])),
         "flags_captured": len(extracted.get('new_flags', [])),
         "library_updated": bool(extracted.get('new_decisions') or extracted.get('project_updates'))
@@ -216,15 +197,12 @@ Start with: ## LIBRARY UPDATES — {today}"""
 
 @app.post("/query")
 async def query_brain(req: QueryRequest):
-    """
-    Ask the brain a question. Returns answer based on everything ingested.
-    """
     notes = read_file(NOTES_FILE)
     library = read_file(LIBRARY_FILE)
-    
+
     if not notes and not library:
         return {"answer": "Brain is empty — ingest some context documents first."}
-    
+
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1000,
@@ -235,7 +213,7 @@ async def query_brain(req: QueryRequest):
 LIBRARY:
 {library[-3000:] if len(library) > 3000 else library}
 
-RECENT NOTES:
+NOTES:
 {notes[-2000:] if len(notes) > 2000 else notes}
 
 QUESTION: {req.question}
@@ -243,7 +221,7 @@ QUESTION: {req.question}
 Answer directly and concisely. If you don't know, say so."""
         }]
     )
-    
+
     return {"answer": response.content[0].text}
 
 
@@ -265,5 +243,5 @@ def get_log():
 
 
 if __name__ == "__main__":
-    log("PICP Agent starting up")
+    log("PICP Agent v1.0.1 starting up")
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
