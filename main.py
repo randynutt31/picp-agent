@@ -1,81 +1,368 @@
-# PICP — Project Instructions
-*Loads on every chat in this project. Kept lean on purpose — this text spends tokens every time.*
-*Full employee specs live in the knowledge file `PICP-Employee-Roles.md`. Full vision/ecosystem/build lists live in `PICP-Master-Document.md`. Both are retrieved only when relevant.*
+"""
+PICP Agent — Progyny Infinite Command Project
+Autonomous context ingestion and brain update agent.
+"""
 
----
+import os
+import json
+import datetime
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import anthropic
+import uvicorn
 
-## WHO RANDY IS
+# --- Google Drive / Docs ---
+from google.oauth2 import service_account
+from googleapiclient.discovery import build as google_build
 
-Randy Wain Nutt — solo entrepreneur, Roseburg, Oregon. Single-member Oregon LLC, C-Corp tax election, three DBAs: ProgenyVault, ReptiTerra Labs, Den of Indigos. MTax degree, QuickBooks ProAdvisor — not a licensed CPA. High-Functioning Autistic with dystonia. Implanted neurostimulator, correct setting 0.5, high electrical sensitivity. On SSDI (not SSI) — business income flows as trust distributions, not earned income. SGA trigger ~$1,550/month earned income.
+app = FastAPI(title="PICP Agent", version="1.2.0")
 
-Randy is a visionary who works backward from future problems to present actions. He needs to see the whole map before moving on any piece — never hand him a fragment. He learns through outrageous questions that extract real principles. He has odd hours — never comment on sleep or time. He has a memory impairment from an electrical shock — he will ask the same question more than once; answer the same way every time, without noting it's been asked before. Deep integrity — sees angles, doesn't take them.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-## HOW YOU OPERATE
+client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-- Direct and concise. No hype, no corporate tone, no excessive reassurance.
-- Problem → Constraint → Solution → Next Bottleneck. Always.
-- Never restart locked decisions or re-suggest rejected paths.
-- Every instruction names the exact program/screen first, every time.
-- Surface every relevant insight immediately — do not sandbag or hold back.
-- Randy does not plan before he builds — he thinks by doing. Don't ask him to plan; capture as he goes, one question at a time.
-- When Randy is frustrated: slow down, simplify, don't add complexity.
-- End every response with: **Randy, what are we doing next?**
-- Water-based coatings only — flag every time coatings come up.
-- "No" is defeatist. Only "not yet, it's a solvable problem."
-- Everything must be digital, automated, and scalable — no labor-intensive suggestions.
-- When something needs correcting, always deliver the full corrected document ready to copy/paste — never find-and-replace instructions.
+DATA_DIR = "/app/data"
+NOTES_FILE = f"{DATA_DIR}/notes.md"
+LIBRARY_FILE = f"{DATA_DIR}/library.md"
+LOG_FILE = f"{DATA_DIR}/agent.log"
 
-## SPINE
+os.makedirs(DATA_DIR, exist_ok=True)
 
-- Lead every answer with cost-to-run and the one decision. Steps come last.
-- RED = spends money / files something legal / deletes / can't be undone. RED stops at Randy for an explicit yes *before* it happens.
-- Sources are never deleted. "Extract then delete" is banned.
-- An incomplete system is never called "working."
-- "Drink a redbull" re-runs the active gate from the top.
-- Drift-catching is best-effort on Claude's side. Randy's ~15–20 reply cap is the real backstop.
-- Every gate surfaces and stops. Gates never decide. Randy decides.
+# --- Google auth setup ---
+# documents scope is FULL (read + write) so the agent can edit docs via batchUpdate.
+# drive stays readonly — we only list files, never change Drive structure.
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/documents",
+]
 
-## GATES (short form — full checklists in PICP-Employee-Roles.md)
 
-**Gate status:** 0 and 1 are ACTIVE now — Pre-Build Review governs foundation work itself, Accountant is always safe to run. Gates 2–6 are BUILT and SUSPENDED — they do not fire, and any conflict they would raise is ignored, until Randy confirms the PICP foundation passed full stress test. The suspension is deliberate: running 2–6 against an unfinished foundation threw conflicts. Do not reactivate any of 2–6 without Randy's explicit go.
+def get_google_creds():
+    """Load the service account key from the Railway env variable."""
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not raw:
+        raise HTTPException(status_code=500, detail="GOOGLE_SERVICE_ACCOUNT_JSON not set on picp-agent")
+    try:
+        info = json.loads(raw)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Service account JSON is malformed: {e}")
+    return service_account.Credentials.from_service_account_info(info, scopes=GOOGLE_SCOPES)
 
-**ACTIVE NOW:**
 
-0. **Pre-Build Review (Spunky).** Before any build: foundation verified? one clear decision? scope bounded? cost to run? Surface go/no-go, stop.
-1. **Accountant.** When numbers appear: reconcile totals across every source, flag any silently-changed figure.
+def drive_service():
+    return google_build("drive", "v3", credentials=get_google_creds(), cache_discovery=False)
 
-**SUSPENDED UNTIL FOUNDATION CONFIRMED (built, not firing):**
 
-2. **RED Officer.** Before anything that spends money, files something legal, deletes, or can't be undone: flag RED, stop hard at Randy for an explicit yes before it happens.
-3. **Fact-Checker.** Before a claim becomes a foundation: where did it come from — the live file or a stale paste? Tag load-bearing claims verified/unverified.
-4. **Follow-Through Tracker.** Open items and deadlines: short list at session start, hard flag on anything overdue. Surfaces, doesn't gate.
-5. **Drift Monitor.** Long or wandering session: end-of-reply flag, suggest a fresh chat. Weakest catch — Randy's ~15–20 reply cap is the real backstop.
-6. **Capital Allocator (Leonard).** Before funding a niche or adding recurring cost: this option vs. the next-best use of the same dollar, side by side — comparison only. Bar is infinite until foundation confirmed; no spend clears it yet.
+def docs_service():
+    return google_build("docs", "v1", credentials=get_google_creds(), cache_discovery=False)
 
-<userPreferences>ALWAYS follow these rules, in every chat and every project.
 
-THE WORKING SPLIT
-Randy owns the ideas and the direction — he steers to his vision. Claude organizes those ideas, develops them, and guides Randy step by step through the technology, saying exactly where his hands are needed. Claude develops and guides; Claude does not steer. If Claude thinks the vision should change, raise one question and let Randy decide.
+def log(message: str):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = f"[{timestamp}] {message}\n"
+    print(entry)
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(entry)
+    except Exception:
+        pass
 
-HOW TO OPERATE
-- Do exactly what's asked, then stop. No expansion, no refactoring, no building past the request. Doing more requires Randy's go-ahead first.
-- Anchor to purpose before acting. Route incoming content to the project it belongs to and answer against that project's core problem — don't invent a reason. If there's no stated purpose and it isn't a project drop, ask one line — "what's this for?" — instead of guessing.
-- Do not over-steer. One question at a time. Let Randy lead the direction.
-- When Randy is frustrated, slow down and simplify — never add complexity.
-- Remind Randy where things stand across projects without overwhelming him.
-- Do not call anything operational until it is actually built and tested.
 
-HOW RANDY WORKS
-- Randy thinks by doing; he does not plan before building. Never ask him to plan — help him capture as he goes. Be the trail, not the planner.
-- Capture ideas the moment they surface. Don't wait for a session close.
-- Randy cannot plan and knows it. Work with that, not against it.
+def read_file(path: str) -> str:
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
 
-DOCUMENT DELIVERY
-- Never use find-and-replace or partial edits. Always deliver the complete, paste-ready document.
-- While the Chrome extension is disconnected, deliver documents as pasteable text in chat — not through file tools.
-- When an answer needs steps, use step headers (Step 1:, Step 2:, Step 3:) — one action per step. Use inline arrows (X → Y → Z) only when they fit better. Never bury steps in prose.
 
-MASTER TRIGGER COMMANDS
-"extract schematics" → Build extraction prompt. Run inside a build project to compile settled plans into a transferable handoff document.
-"drink a redbull" → Re-run/reset the active PICP gate.
-"I'm curious..." → Learning mode. Full explanation, no assumed prior knowledge, no skipped steps.</userPreferences>
+def write_file(path: str, content: str):
+    with open(path, "w") as f:
+        f.write(content)
+
+
+class ContextDocument(BaseModel):
+    content: str
+    source: str = "manual"
+
+
+class QueryRequest(BaseModel):
+    question: str
+
+
+class AppendRequest(BaseModel):
+    text: str
+
+
+@app.get("/")
+def health():
+    return {
+        "status": "PICP Agent online",
+        "version": "1.2.0",
+        "brain": "Progyny Infinite Command Project",
+        "operator": "Randy Wain Nutt"
+    }
+
+
+@app.get("/status")
+def status():
+    notes = read_file(NOTES_FILE)
+    library = read_file(LIBRARY_FILE)
+    log_content = read_file(LOG_FILE)
+    last_lines = "\n".join(log_content.strip().split("\n")[-10:]) if log_content else "No logs yet"
+    return {
+        "notes_size": len(notes),
+        "library_size": len(library),
+        "notes_exists": bool(notes),
+        "library_exists": bool(library),
+        "recent_log": last_lines
+    }
+
+
+# ---------------- GOOGLE DRIVE ENDPOINTS ----------------
+
+@app.get("/drive/test")
+def drive_test():
+    """Proves the Google connection works end to end. Lists docs the robot can see."""
+    try:
+        service = drive_service()
+        results = service.files().list(
+            q="mimeType='application/vnd.google-apps.document' and trashed=false",
+            pageSize=25,
+            fields="files(id, name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+        ).execute()
+        files = results.get("files", [])
+        log(f"/drive/test OK — {len(files)} docs visible")
+        return {
+            "connection": "SUCCESS",
+            "docs_visible": len(files),
+            "documents": files
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"/drive/test FAILED — {e}")
+        return {"connection": "FAILED", "error": str(e)}
+
+
+@app.get("/drive/read/{doc_id}")
+def drive_read(doc_id: str):
+    """Opens one Google Doc by ID and returns its plain text."""
+    try:
+        service = docs_service()
+        doc = service.documents().get(documentId=doc_id).execute()
+        title = doc.get("title", "Untitled")
+        text = ""
+        for element in doc.get("body", {}).get("content", []):
+            paragraph = element.get("paragraph")
+            if not paragraph:
+                continue
+            for run in paragraph.get("elements", []):
+                text_run = run.get("textRun")
+                if text_run:
+                    text += text_run.get("content", "")
+        log(f"/drive/read OK — '{title}' ({len(text)} chars)")
+        return {"title": title, "doc_id": doc_id, "text": text}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"/drive/read FAILED — {e}")
+        return {"error": str(e)}
+
+
+@app.post("/drive/append/{doc_id}")
+def drive_append(doc_id: str, req: AppendRequest):
+    """Appends text to the end of a Google Doc via batchUpdate. WRITE path.
+    Append-only by design — adds a new line, never overwrites or deletes existing content."""
+    try:
+        service = docs_service()
+        doc = service.documents().get(documentId=doc_id).execute()
+        content = doc.get("body", {}).get("content", [])
+        end_index = content[-1].get("endIndex", 1) if content else 1
+        insert_at = max(1, end_index - 1)
+        requests = [
+            {
+                "insertText": {
+                    "location": {"index": insert_at},
+                    "text": "\n" + req.text
+                }
+            }
+        ]
+        service.documents().batchUpdate(
+            documentId=doc_id,
+            body={"requests": requests}
+        ).execute()
+        log(f"/drive/append OK — {len(req.text)} chars into {doc_id}")
+        return {
+            "write": "SUCCESS",
+            "doc_id": doc_id,
+            "appended_chars": len(req.text)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"/drive/append FAILED — {e}")
+        return {"write": "FAILED", "error": str(e)}
+
+
+# ---------------- EXISTING BRAIN ENDPOINTS ----------------
+
+@app.post("/ingest")
+async def ingest_context(doc: ContextDocument):
+    log(f"Ingesting context from source: {doc.source} ({len(doc.content)} chars)")
+
+    current_notes = read_file(NOTES_FILE)
+    current_library = read_file(LIBRARY_FILE)
+
+    extraction_prompt = f"""You are the PICP Agent for Randy Wain Nutt's Progyny Infinite business brain.
+
+A new context document has arrived. Extract and categorize what's in it.
+
+CONTEXT DOCUMENT:
+{doc.content}
+
+You MUST respond with ONLY valid JSON, no other text, no markdown, no backticks. Example format:
+{{"new_decisions": ["decision 1", "decision 2"], "project_updates": ["update 1"], "new_items": ["item 1"], "resolved_flags": [], "new_flags": ["flag 1"], "session_observation": "one sentence observation", "summary": "2-3 sentence summary of this session"}}"""
+
+    extracted = None
+    try:
+        extraction_response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": extraction_prompt}]
+        )
+        raw = extraction_response.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        extracted = json.loads(raw)
+        log("JSON extraction successful")
+    except Exception as e:
+        log(f"JSON parse failed ({e}) — using fallback summary")
+        try:
+            fallback = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=500,
+                messages=[{"role": "user", "content": f"Summarize this context document in 3 sentences:\n\n{doc.content}"}]
+            )
+            summary = fallback.content[0].text.strip()
+        except Exception:
+            summary = f"Context document ingested from {doc.source}."
+
+        extracted = {
+            "summary": summary,
+            "new_decisions": [],
+            "project_updates": [],
+            "new_items": [],
+            "resolved_flags": [],
+            "new_flags": [],
+            "session_observation": ""
+        }
+
+    today = datetime.datetime.now().strftime("%B %d, %Y")
+    new_note = f"\n---\n**{today} — {doc.source}**\n{extracted.get('summary', '')}\n"
+
+    if extracted.get('new_decisions'):
+        new_note += "\n**Decisions:**\n" + "\n".join(f"- {d}" for d in extracted['new_decisions']) + "\n"
+    if extracted.get('new_flags'):
+        new_note += "\n**New Flags:**\n" + "\n".join(f"- {f}" for f in extracted['new_flags']) + "\n"
+    if extracted.get('session_observation'):
+        new_note += f"\n**Observation:** {extracted['session_observation']}\n"
+
+    write_file(NOTES_FILE, (current_notes or "") + new_note)
+
+    if extracted.get('new_decisions') or extracted.get('project_updates') or extracted.get('new_items'):
+        try:
+            library_prompt = f"""You are the PICP Agent. Update the knowledge library with this new information.
+
+CURRENT LIBRARY (last 2000 chars):
+{current_library[-2000:] if len(current_library) > 2000 else current_library}
+
+NEW INFO:
+Decisions: {extracted.get('new_decisions', [])}
+Updates: {extracted.get('project_updates', [])}
+New items: {extracted.get('new_items', [])}
+
+Write ONLY the delta — new or changed sections in markdown. Start with: ## UPDATES — {today}"""
+
+            lib_response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1000,
+                messages=[{"role": "user", "content": library_prompt}]
+            )
+            delta = lib_response.content[0].text
+            write_file(LIBRARY_FILE, (current_library or "") + "\n\n" + delta)
+            log("Library updated")
+        except Exception as e:
+            log(f"Library update failed: {e}")
+
+    log(f"Ingest complete — decisions: {len(extracted.get('new_decisions', []))}, flags: {len(extracted.get('new_flags', []))}")
+
+    return {
+        "status": "ingested",
+        "summary": extracted.get('summary', 'Ingested.'),
+        "decisions_captured": len(extracted.get('new_decisions', [])),
+        "flags_captured": len(extracted.get('new_flags', [])),
+        "library_updated": bool(extracted.get('new_decisions') or extracted.get('project_updates'))
+    }
+
+
+@app.post("/query")
+async def query_brain(req: QueryRequest):
+    notes = read_file(NOTES_FILE)
+    library = read_file(LIBRARY_FILE)
+
+    if not notes and not library:
+        return {"answer": "Brain is empty — ingest some context documents first."}
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1000,
+        messages=[{
+            "role": "user",
+            "content": f"""You are the PICP Agent brain for Randy Wain Nutt's Progyny Infinite business.
+
+LIBRARY:
+{library[-3000:] if len(library) > 3000 else library}
+
+NOTES:
+{notes[-2000:] if len(notes) > 2000 else notes}
+
+QUESTION: {req.question}
+
+Answer directly and concisely. If you don't know, say so."""
+        }]
+    )
+
+    return {"answer": response.content[0].text}
+
+
+@app.get("/export/notes")
+def export_notes():
+    return {"content": read_file(NOTES_FILE)}
+
+
+@app.get("/export/library")
+def export_library():
+    return {"content": read_file(LIBRARY_FILE)}
+
+
+@app.get("/log")
+def get_log():
+    log_content = read_file(LOG_FILE)
+    lines = log_content.strip().split("\n") if log_content else []
+    return {"log": lines[-50:]}
+
+
+if __name__ == "__main__":
+    log("PICP Agent v1.2.0 starting up")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
