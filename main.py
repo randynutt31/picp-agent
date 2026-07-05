@@ -235,7 +235,7 @@ You MUST respond with ONLY valid JSON, no other text, no markdown, no backticks.
     extracted = None
     try:
         extraction_response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-8",
             max_tokens=1000,
             messages=[{"role": "user", "content": extraction_prompt}]
         )
@@ -250,7 +250,7 @@ You MUST respond with ONLY valid JSON, no other text, no markdown, no backticks.
         log(f"JSON parse failed ({e}) — using fallback summary")
         try:
             fallback = client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-opus-4-8",
                 max_tokens=500,
                 messages=[{"role": "user", "content": f"Summarize this context document in 3 sentences:\n\n{doc.content}"}]
             )
@@ -295,7 +295,7 @@ New items: {extracted.get('new_items', [])}
 Write ONLY the delta — new or changed sections in markdown. Start with: ## UPDATES — {today}"""
 
             lib_response = client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-opus-4-8",
                 max_tokens=1000,
                 messages=[{"role": "user", "content": library_prompt}]
             )
@@ -325,7 +325,7 @@ async def query_brain(req: QueryRequest):
         return {"answer": "Brain is empty — ingest some context documents first."}
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-opus-4-8",
         max_tokens=1000,
         messages=[{
             "role": "user",
