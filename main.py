@@ -16,7 +16,7 @@ import uvicorn
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as google_build
 
-app = FastAPI(title="PICP Agent", version="1.1.0")
+app = FastAPI(title="PICP Agent", version="1.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,9 +35,11 @@ LOG_FILE = f"{DATA_DIR}/agent.log"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # --- Google auth setup ---
+# documents scope is FULL (read + write) so the agent can edit docs via batchUpdate.
+# drive stays readonly — we only list files, never change Drive structure.
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/documents.readonly",
+    "https://www.googleapis.com/auth/documents",
 ]
 
 
@@ -94,11 +96,15 @@ class QueryRequest(BaseModel):
     question: str
 
 
+class AppendRequest(BaseModel):
+    text: str
+
+
 @app.get("/")
 def health():
     return {
         "status": "PICP Agent online",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "brain": "Progyny Infinite Command Project",
         "operator": "Randy Wain Nutt"
     }
@@ -172,156 +178,23 @@ def drive_read(doc_id: str):
         return {"error": str(e)}
 
 
-# ---------------- EXISTING BRAIN ENDPOINTS ----------------
-
-@app.post("/ingest")
-async def ingest_context(doc: ContextDocument):
-    log(f"Ingesting context from source: {doc.source} ({len(doc.content)} chars)")
-
-    current_notes = read_file(NOTES_FILE)
-    current_library = read_file(LIBRARY_FILE)
-
-    extraction_prompt = f"""You are the PICP Agent for Randy Wain Nutt's Progyny Infinite business brain.
-
-A new context document has arrived. Extract and categorize what's in it.
-
-CONTEXT DOCUMENT:
-{doc.content}
-
-You MUST respond with ONLY valid JSON, no other text, no markdown, no backticks. Example format:
-{{"new_decisions": ["decision 1", "decision 2"], "project_updates": ["update 1"], "new_items": ["item 1"], "resolved_flags": [], "new_flags": ["flag 1"], "session_observation": "one sentence observation", "summary": "2-3 sentence summary of this session"}}"""
-
-    extracted = None
+@app.post("/drive/append/{doc_id}")
+def drive_append(doc_id: str, req: AppendRequest):
+    """Appends text to the end of a Google Doc via batchUpdate. WRITE path.
+    Append-only by design — adds a new line, never overwrites or deletes existing content."""
     try:
-        extraction_response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": extraction_prompt}]
-        )
-        raw = extraction_response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        extracted = json.loads(raw)
-        log("JSON extraction successful")
-    except Exception as e:
-        log(f"JSON parse failed ({e}) — using fallback summary")
-        try:
-            fallback = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=500,
-                messages=[{"role": "user", "content": f"Summarize this context document in 3 sentences:\n\n{doc.content}"}]
-            )
-            summary = fallback.content[0].text.strip()
-        except Exception:
-            summary = f"Context document ingested from {doc.source}."
-
-        extracted = {
-            "summary": summary,
-            "new_decisions": [],
-            "project_updates": [],
-            "new_items": [],
-            "resolved_flags": [],
-            "new_flags": [],
-            "session_observation": ""
-        }
-
-    today = datetime.datetime.now().strftime("%B %d, %Y")
-    new_note = f"\n---\n**{today} — {doc.source}**\n{extracted.get('summary', '')}\n"
-
-    if extracted.get('new_decisions'):
-        new_note += "\n**Decisions:**\n" + "\n".join(f"- {d}" for d in extracted['new_decisions']) + "\n"
-    if extracted.get('new_flags'):
-        new_note += "\n**New Flags:**\n" + "\n".join(f"- {f}" for f in extracted['new_flags']) + "\n"
-    if extracted.get('session_observation'):
-        new_note += f"\n**Observation:** {extracted['session_observation']}\n"
-
-    write_file(NOTES_FILE, (current_notes or "") + new_note)
-
-    if extracted.get('new_decisions') or extracted.get('project_updates') or extracted.get('new_items'):
-        try:
-            library_prompt = f"""You are the PICP Agent. Update the knowledge library with this new information.
-
-CURRENT LIBRARY (last 2000 chars):
-{current_library[-2000:] if len(current_library) > 2000 else current_library}
-
-NEW INFO:
-Decisions: {extracted.get('new_decisions', [])}
-Updates: {extracted.get('project_updates', [])}
-New items: {extracted.get('new_items', [])}
-
-Write ONLY the delta — new or changed sections in markdown. Start with: ## UPDATES — {today}"""
-
-            lib_response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1000,
-                messages=[{"role": "user", "content": library_prompt}]
-            )
-            delta = lib_response.content[0].text
-            write_file(LIBRARY_FILE, (current_library or "") + "\n\n" + delta)
-            log("Library updated")
-        except Exception as e:
-            log(f"Library update failed: {e}")
-
-    log(f"Ingest complete — decisions: {len(extracted.get('new_decisions', []))}, flags: {len(extracted.get('new_flags', []))}")
-
-    return {
-        "status": "ingested",
-        "summary": extracted.get('summary', 'Ingested.'),
-        "decisions_captured": len(extracted.get('new_decisions', [])),
-        "flags_captured": len(extracted.get('new_flags', [])),
-        "library_updated": bool(extracted.get('new_decisions') or extracted.get('project_updates'))
-    }
-
-
-@app.post("/query")
-async def query_brain(req: QueryRequest):
-    notes = read_file(NOTES_FILE)
-    library = read_file(LIBRARY_FILE)
-
-    if not notes and not library:
-        return {"answer": "Brain is empty — ingest some context documents first."}
-
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        messages=[{
-            "role": "user",
-            "content": f"""You are the PICP Agent brain for Randy Wain Nutt's Progyny Infinite business.
-
-LIBRARY:
-{library[-3000:] if len(library) > 3000 else library}
-
-NOTES:
-{notes[-2000:] if len(notes) > 2000 else notes}
-
-QUESTION: {req.question}
-
-Answer directly and concisely. If you don't know, say so."""
-        }]
-    )
-
-    return {"answer": response.content[0].text}
-
-
-@app.get("/export/notes")
-def export_notes():
-    return {"content": read_file(NOTES_FILE)}
-
-
-@app.get("/export/library")
-def export_library():
-    return {"content": read_file(LIBRARY_FILE)}
-
-
-@app.get("/log")
-def get_log():
-    log_content = read_file(LOG_FILE)
-    lines = log_content.strip().split("\n") if log_content else []
-    return {"log": lines[-50:]}
-
-
-if __name__ == "__main__":
-    log("PICP Agent v1.1.0 starting up")
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+        service = docs_service()
+        doc = service.documents().get(documentId=doc_id).execute()
+        content = doc.get("body", {}).get("content", [])
+        end_index = content[-1].get("endIndex", 1) if content else 1
+        insert_at = max(1, end_index - 1)
+        requests = [
+            {
+                "insertText": {
+                    "location": {"index": insert_at},
+                    "text": "\n" + req.text
+                }
+            }
+        ]
+        service.documents().batchUpdate(
+            documentId=doc_id,
