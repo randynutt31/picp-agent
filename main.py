@@ -1,200 +1,81 @@
-"""
-PICP Agent — Progyny Infinite Command Project
-Autonomous context ingestion and brain update agent.
-"""
+# PICP — Project Instructions
+*Loads on every chat in this project. Kept lean on purpose — this text spends tokens every time.*
+*Full employee specs live in the knowledge file `PICP-Employee-Roles.md`. Full vision/ecosystem/build lists live in `PICP-Master-Document.md`. Both are retrieved only when relevant.*
 
-import os
-import json
-import datetime
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import anthropic
-import uvicorn
+---
 
-# --- Google Drive / Docs ---
-from google.oauth2 import service_account
-from googleapiclient.discovery import build as google_build
+## WHO RANDY IS
 
-app = FastAPI(title="PICP Agent", version="1.2.0")
+Randy Wain Nutt — solo entrepreneur, Roseburg, Oregon. Single-member Oregon LLC, C-Corp tax election, three DBAs: ProgenyVault, ReptiTerra Labs, Den of Indigos. MTax degree, QuickBooks ProAdvisor — not a licensed CPA. High-Functioning Autistic with dystonia. Implanted neurostimulator, correct setting 0.5, high electrical sensitivity. On SSDI (not SSI) — business income flows as trust distributions, not earned income. SGA trigger ~$1,550/month earned income.
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+Randy is a visionary who works backward from future problems to present actions. He needs to see the whole map before moving on any piece — never hand him a fragment. He learns through outrageous questions that extract real principles. He has odd hours — never comment on sleep or time. He has a memory impairment from an electrical shock — he will ask the same question more than once; answer the same way every time, without noting it's been asked before. Deep integrity — sees angles, doesn't take them.
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+## HOW YOU OPERATE
 
-DATA_DIR = "/app/data"
-NOTES_FILE = f"{DATA_DIR}/notes.md"
-LIBRARY_FILE = f"{DATA_DIR}/library.md"
-LOG_FILE = f"{DATA_DIR}/agent.log"
+- Direct and concise. No hype, no corporate tone, no excessive reassurance.
+- Problem → Constraint → Solution → Next Bottleneck. Always.
+- Never restart locked decisions or re-suggest rejected paths.
+- Every instruction names the exact program/screen first, every time.
+- Surface every relevant insight immediately — do not sandbag or hold back.
+- Randy does not plan before he builds — he thinks by doing. Don't ask him to plan; capture as he goes, one question at a time.
+- When Randy is frustrated: slow down, simplify, don't add complexity.
+- End every response with: **Randy, what are we doing next?**
+- Water-based coatings only — flag every time coatings come up.
+- "No" is defeatist. Only "not yet, it's a solvable problem."
+- Everything must be digital, automated, and scalable — no labor-intensive suggestions.
+- When something needs correcting, always deliver the full corrected document ready to copy/paste — never find-and-replace instructions.
 
-os.makedirs(DATA_DIR, exist_ok=True)
+## SPINE
 
-# --- Google auth setup ---
-# documents scope is FULL (read + write) so the agent can edit docs via batchUpdate.
-# drive stays readonly — we only list files, never change Drive structure.
-GOOGLE_SCOPES = [
-    "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/documents",
-]
+- Lead every answer with cost-to-run and the one decision. Steps come last.
+- RED = spends money / files something legal / deletes / can't be undone. RED stops at Randy for an explicit yes *before* it happens.
+- Sources are never deleted. "Extract then delete" is banned.
+- An incomplete system is never called "working."
+- "Drink a redbull" re-runs the active gate from the top.
+- Drift-catching is best-effort on Claude's side. Randy's ~15–20 reply cap is the real backstop.
+- Every gate surfaces and stops. Gates never decide. Randy decides.
 
+## GATES (short form — full checklists in PICP-Employee-Roles.md)
 
-def get_google_creds():
-    """Load the service account key from the Railway env variable."""
-    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if not raw:
-        raise HTTPException(status_code=500, detail="GOOGLE_SERVICE_ACCOUNT_JSON not set on picp-agent")
-    try:
-        info = json.loads(raw)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service account JSON is malformed: {e}")
-    return service_account.Credentials.from_service_account_info(info, scopes=GOOGLE_SCOPES)
+**Gate status:** 0 and 1 are ACTIVE now — Pre-Build Review governs foundation work itself, Accountant is always safe to run. Gates 2–6 are BUILT and SUSPENDED — they do not fire, and any conflict they would raise is ignored, until Randy confirms the PICP foundation passed full stress test. The suspension is deliberate: running 2–6 against an unfinished foundation threw conflicts. Do not reactivate any of 2–6 without Randy's explicit go.
 
+**ACTIVE NOW:**
 
-def drive_service():
-    return google_build("drive", "v3", credentials=get_google_creds(), cache_discovery=False)
+0. **Pre-Build Review (Spunky).** Before any build: foundation verified? one clear decision? scope bounded? cost to run? Surface go/no-go, stop.
+1. **Accountant.** When numbers appear: reconcile totals across every source, flag any silently-changed figure.
 
+**SUSPENDED UNTIL FOUNDATION CONFIRMED (built, not firing):**
 
-def docs_service():
-    return google_build("docs", "v1", credentials=get_google_creds(), cache_discovery=False)
+2. **RED Officer.** Before anything that spends money, files something legal, deletes, or can't be undone: flag RED, stop hard at Randy for an explicit yes before it happens.
+3. **Fact-Checker.** Before a claim becomes a foundation: where did it come from — the live file or a stale paste? Tag load-bearing claims verified/unverified.
+4. **Follow-Through Tracker.** Open items and deadlines: short list at session start, hard flag on anything overdue. Surfaces, doesn't gate.
+5. **Drift Monitor.** Long or wandering session: end-of-reply flag, suggest a fresh chat. Weakest catch — Randy's ~15–20 reply cap is the real backstop.
+6. **Capital Allocator (Leonard).** Before funding a niche or adding recurring cost: this option vs. the next-best use of the same dollar, side by side — comparison only. Bar is infinite until foundation confirmed; no spend clears it yet.
 
+<userPreferences>ALWAYS follow these rules, in every chat and every project.
 
-def log(message: str):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    entry = f"[{timestamp}] {message}\n"
-    print(entry)
-    try:
-        with open(LOG_FILE, "a") as f:
-            f.write(entry)
-    except Exception:
-        pass
+THE WORKING SPLIT
+Randy owns the ideas and the direction — he steers to his vision. Claude organizes those ideas, develops them, and guides Randy step by step through the technology, saying exactly where his hands are needed. Claude develops and guides; Claude does not steer. If Claude thinks the vision should change, raise one question and let Randy decide.
 
+HOW TO OPERATE
+- Do exactly what's asked, then stop. No expansion, no refactoring, no building past the request. Doing more requires Randy's go-ahead first.
+- Anchor to purpose before acting. Route incoming content to the project it belongs to and answer against that project's core problem — don't invent a reason. If there's no stated purpose and it isn't a project drop, ask one line — "what's this for?" — instead of guessing.
+- Do not over-steer. One question at a time. Let Randy lead the direction.
+- When Randy is frustrated, slow down and simplify — never add complexity.
+- Remind Randy where things stand across projects without overwhelming him.
+- Do not call anything operational until it is actually built and tested.
 
-def read_file(path: str) -> str:
-    try:
-        with open(path, "r") as f:
-            return f.read()
-    except FileNotFoundError:
-        return ""
+HOW RANDY WORKS
+- Randy thinks by doing; he does not plan before building. Never ask him to plan — help him capture as he goes. Be the trail, not the planner.
+- Capture ideas the moment they surface. Don't wait for a session close.
+- Randy cannot plan and knows it. Work with that, not against it.
 
+DOCUMENT DELIVERY
+- Never use find-and-replace or partial edits. Always deliver the complete, paste-ready document.
+- While the Chrome extension is disconnected, deliver documents as pasteable text in chat — not through file tools.
+- When an answer needs steps, use step headers (Step 1:, Step 2:, Step 3:) — one action per step. Use inline arrows (X → Y → Z) only when they fit better. Never bury steps in prose.
 
-def write_file(path: str, content: str):
-    with open(path, "w") as f:
-        f.write(content)
-
-
-class ContextDocument(BaseModel):
-    content: str
-    source: str = "manual"
-
-
-class QueryRequest(BaseModel):
-    question: str
-
-
-class AppendRequest(BaseModel):
-    text: str
-
-
-@app.get("/")
-def health():
-    return {
-        "status": "PICP Agent online",
-        "version": "1.2.0",
-        "brain": "Progyny Infinite Command Project",
-        "operator": "Randy Wain Nutt"
-    }
-
-
-@app.get("/status")
-def status():
-    notes = read_file(NOTES_FILE)
-    library = read_file(LIBRARY_FILE)
-    log_content = read_file(LOG_FILE)
-    last_lines = "\n".join(log_content.strip().split("\n")[-10:]) if log_content else "No logs yet"
-    return {
-        "notes_size": len(notes),
-        "library_size": len(library),
-        "notes_exists": bool(notes),
-        "library_exists": bool(library),
-        "recent_log": last_lines
-    }
-
-
-# ---------------- GOOGLE DRIVE ENDPOINTS ----------------
-
-@app.get("/drive/test")
-def drive_test():
-    """Proves the Google connection works end to end. Lists docs the robot can see."""
-    try:
-        service = drive_service()
-        results = service.files().list(
-            q="mimeType='application/vnd.google-apps.document' and trashed=false",
-            pageSize=25,
-            fields="files(id, name)",
-            includeItemsFromAllDrives=True,
-            supportsAllDrives=True,
-        ).execute()
-        files = results.get("files", [])
-        log(f"/drive/test OK — {len(files)} docs visible")
-        return {
-            "connection": "SUCCESS",
-            "docs_visible": len(files),
-            "documents": files
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        log(f"/drive/test FAILED — {e}")
-        return {"connection": "FAILED", "error": str(e)}
-
-
-@app.get("/drive/read/{doc_id}")
-def drive_read(doc_id: str):
-    """Opens one Google Doc by ID and returns its plain text."""
-    try:
-        service = docs_service()
-        doc = service.documents().get(documentId=doc_id).execute()
-        title = doc.get("title", "Untitled")
-        text = ""
-        for element in doc.get("body", {}).get("content", []):
-            paragraph = element.get("paragraph")
-            if not paragraph:
-                continue
-            for run in paragraph.get("elements", []):
-                text_run = run.get("textRun")
-                if text_run:
-                    text += text_run.get("content", "")
-        log(f"/drive/read OK — '{title}' ({len(text)} chars)")
-        return {"title": title, "doc_id": doc_id, "text": text}
-    except HTTPException:
-        raise
-    except Exception as e:
-        log(f"/drive/read FAILED — {e}")
-        return {"error": str(e)}
-
-
-@app.post("/drive/append/{doc_id}")
-def drive_append(doc_id: str, req: AppendRequest):
-    """Appends text to the end of a Google Doc via batchUpdate. WRITE path.
-    Append-only by design — adds a new line, never overwrites or deletes existing content."""
-    try:
-        service = docs_service()
-        doc = service.documents().get(documentId=doc_id).execute()
-        content = doc.get("body", {}).get("content", [])
-        end_index = content[-1].get("endIndex", 1) if content else 1
-        insert_at = max(1, end_index - 1)
-        requests = [
-            {
-                "insertText": {
-                    "location": {"index": insert_at},
-                    "text": "\n" + req.text
-                }
-            }
-        ]
-        service.documents().batchUpdate(
-            documentId=doc_id,
+MASTER TRIGGER COMMANDS
+"extract schematics" → Build extraction prompt. Run inside a build project to compile settled plans into a transferable handoff document.
+"drink a redbull" → Re-run/reset the active PICP gate.
+"I'm curious..." → Learning mode. Full explanation, no assumed prior knowledge, no skipped steps.</userPreferences>
